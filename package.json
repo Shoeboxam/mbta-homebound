@@ -6,7 +6,6 @@
     "scripts": {
         "dev": "npx http-server . -p 8000",
         "electron:dev": "ELECTRON_START_URL=http://localhost:8000 electron .",
-        "build:web": "mkdir -p dist && cp index.html style.css state.js app.js mbta.js planner.js ui.js notify.js dist/",
         "start:electron": "npm run build:web && electron .",
         "dist:electron": "npm run build:web && electron-builder --publish never",
         "release:electron": "npm run build:web && electron-builder --publish always",
