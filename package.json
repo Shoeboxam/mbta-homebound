@@ -1,0 +1,55 @@
+{
+    "name": "mbta-homebound",
+    "version": "0.1.0",
+    "private": true,
+    "main": "electron/main.js",
+    "scripts": {
+        "dev": "npx http-server . -p 8000",
+        "electron:dev": "ELECTRON_START_URL=http://localhost:8000 electron .",
+        "build:web": "mkdir -p dist && cp index.html style.css state.js app.js mbta.js planner.js ui.js notify.js dist/",
+        "start:electron": "npm run build:web && electron .",
+        "dist:electron": "npm run build:web && electron-builder --publish never",
+        "release:electron": "npm run build:web && electron-builder --publish always",
+        "icons": "node scripts/make-icons.js"
+    },
+    "devDependencies": {
+        "electron": "^34.0.0",
+        "electron-builder": "^25.1.0",
+        "sharp": "^0.34.5"
+    },
+    "build": {
+        "appId": "com.shoeboxam.mbta-homebound",
+        "productName": "Homebound Arrival Times",
+        "directories": {
+            "output": "release"
+        },
+        "files": [
+            "dist/**/*",
+            "electron/**/*",
+            "build/**/*"
+        ],
+        "mac": {
+            "target": [
+                "dmg"
+            ],
+            "icon": "build/icon.icns"
+        },
+        "win": {
+            "target": [
+                "nsis"
+            ],
+            "icon": "build/icon.ico"
+        },
+        "linux": {
+            "target": [
+                "AppImage"
+            ],
+            "icon": "build/icon.png"
+        },
+        "publish": [
+            {
+                "provider": "github"
+            }
+        ]
+    }
+}

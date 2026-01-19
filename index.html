@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Homebound Arrival Times</title>
+
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%23da291c'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='18'%20fill='white'/%3E%3Ctext%20x='32'%20y='38'%20text-anchor='middle'%20font-family='Helvetica,Arial,sans-serif'%20font-size='18'%20font-weight='700'%20fill='%23000'%3ET%3C/text%3E%3C/svg%3E" />
+
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+    <main>
+        <h1 class="pageTitle">Homebound Arrival Times</h1>
+
+        <div id="alerts" class="alerts" hidden></div>
+
+        <div class="tableWrap" id="tableWrap" role="region" aria-label="Schedule table" tabindex="0">
+            <div id="loading" class="spinnerWrap" aria-live="polite">
+                <div class="spinner" aria-label="Loading"></div>
+            </div>
+
+            <div id="errorBox" class="errorBox" hidden></div>
+
+            <table id="tbl" hidden>
+                <thead id="thead"></thead>
+                <tbody id="tbody"></tbody>
+            </table>
+        </div>
+
+        <!-- Clickable: triggers refresh if >= 1s old -->
+        <div id="updatedWrap" class="updatedWrap" hidden title="Click to refresh">
+            <div id="updatedAgo" class="updatedAgo"></div>
+            <div id="simTime" class="simTime" hidden></div>
+        </div>
+
+        <!-- UPDATED LEGEND TEXT -->
+        <div id="legend" class="legend">
+            <div class="legendRow">
+                <div class="legendKey"><b>Arlington</b>:</div>
+                <div class="legendVal">arrival of last Green with ≥1 min layover before Red arrival</div>
+            </div>
+            <div class="legendRow">
+                <div class="legendKey"><b>Park</b>:</div>
+                <div class="legendVal">arrival of last Red with ≥MHL min layover before bus arrival</div>
+            </div>
+            <div class="legendRow">
+                <div class="legendKey"><b>Layover</b>:</div>
+                <div class="legendVal">minutes between Harvard Red arrival (or now) and bus departure</div>
+            </div>
+            <div class="legendRow">
+                <div class="legendKey"><b>Harvard</b>:</div>
+                <div class="legendVal">arrival of bus 75 at Harvard</div>
+            </div>
+            <div class="legendRow">
+                <div class="legendKey"><b>Home</b>:</div>
+                <div class="legendVal">arrival of bus 75 at home stop</div>
+            </div>
+            <div class="legendRow">
+                <div class="legendKey"><u>Underline</u>:</div>
+                <div class="legendVal">denotes a real-time prediction (higher confidence)</div>
+            </div>
+        </div>
+
+        <section class="settings" aria-label="Settings">
+            <div class="settingsGrid">
+                <label class="field" title="URL param: layover">
+                    <span class="label">Minimum Harvard Layover (min)</span>
+                    <input id="layoverMin" type="number" min="0" step="1" />
+                </label>
+
+                <!-- Notifications: shown only on desktop, and only usable in Electron -->
+                <details id="notifyDetails" class="notifyDetails" hidden>
+                    <summary class="notifySummary">
+                        <span>Notifications</span>
+                        <span class="chev" aria-hidden="true">▾</span>
+                    </summary>
+
+                    <div class="notifyBody">
+                        <!-- Electron-only content -->
+                        <div id="notifyElectronOnly">
+
+                            <!-- your existing Electron-only rows, e.g.: -->
+                            <div class="field" title="URL param: notify">
+                                <div class="seg3" role="radiogroup" aria-label="Notifications mode">
+                                    <input type="radio" id="nm_disabled" name="notifyMode" value="disabled">
+                                    <label for="nm_disabled">Disabled</label>
+
+                                    <input type="radio" id="nm_silent" name="notifyMode" value="silent">
+                                    <label for="nm_silent">Silent</label>
+
+                                    <input type="radio" id="nm_enabled" name="notifyMode" value="enabled">
+                                    <label for="nm_enabled">Enabled</label>
+                                </div>
+                            </div>
+
+                            <div id="notifyConfig" class="notifyConfig">
+                                <label class="field" title="URL param: lead">
+                                    <span class="label">Notify lead time (min)</span>
+                                    <input id="notifyLeadMin" type="number" min="0" step="1" />
+                                </label>
+
+                                <label class="field" title="URL param: commute">
+                                    <span class="label">Commute window start (HH:MM)</span>
+                                    <input id="commuteStart" type="text" inputmode="numeric" placeholder="16:50" />
+                                </label>
+
+                                <label class="field">
+                                <span id="notifyExampleLabel" class="label">Example</span>
+                                <div id="notifyExampleRow" class="notifyExampleRow">
+                                    <div class="notifyExampleBox">
+                                        <div class="notifyExampleTitle">Commute</div>
+                                        <div id="notifyExampleText" class="notifyExampleText">Park --:-- arrival. No
+                                            alerts.
+                                        </div>
+                                    </div>
+
+                                    <button id="testNotify" type="button" class="btn">Test</button>
+                                </div>
+                            </label>
+                            </div>
+
+                            <div id="notifySuppressed" style="margin-top:6px"></div>
+                            <div id="bgNote" class="footerNote">
+                                Background auto-refresh + notifications only run when notifications are enabled
+                                <i>and</i> the current time is within the commute window.
+                            </div>
+                        </div>
+
+                        <!-- Web-only (and always present) -->
+                        <div id="electronHint" class="electronHint"></div>
+                    </div>
+
+                </details>
+
+                <details id="advanced" class="advanced">
+                    <summary class="advancedSummary">
+                        <span>Advanced</span>
+                        <span class="chev" aria-hidden="true">▾</span>
+                    </summary>
+
+                    <div class="advancedBody">
+                        <label class="field" title="URL param: apikey (or key)">
+                            <span class="label">MBTA API key</span>
+                            <input id="apiKey" type="password" autocomplete="off" />
+                        </label>
+
+                        <label class="field" title="URL param: home">
+                            <span class="label">Home stop id</span>
+                            <input id="homeStop" type="text" autocomplete="off" />
+                        </label>
+                        <div id="homeHint" class="hint" hidden>
+                            Set Home stop id to filter 75 toward home + show Home arrival.
+                        </div>
+
+                        <label class="field" title="URL param: start">
+                            <span class="label">Start override (YYYY-MM-DDTHH:MM)</span>
+                            <input id="startOverride" type="text" autocomplete="off" placeholder="(empty = now)" />
+                        </label>
+
+                        <div class="chips">
+                            <button id="chipNow" type="button" class="chip">Now</button>
+                            <button id="chip450" type="button" class="chip">4:50</button>
+                            <button id="chip510" type="button" class="chip">5:10</button>
+                            <button id="chipClear" type="button" class="chip chipGhost">Clear</button>
+                        </div>
+
+                        <div class="settingsActions">
+                            <button id="clearState" type="button">Reset to defaults</button>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>
