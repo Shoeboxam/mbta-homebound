@@ -1,20 +1,20 @@
-name: Release Electron App
+name: Release Electron App (every push)
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
+    name: Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
-
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -29,9 +29,46 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Build + Publish
-        uses: samuelmeuli/action-electron-builder@v1
+      # Uses your existing script:
+      # "dist:electron": "npm run build:web && electron-builder --publish never"
+      - name: Build Electron artifacts
+        run: npm run dist:electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          release: true
-          args: "--publish always"
+          name: electron-${{ matrix.os }}
+          path: release/**
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+
+      - name: Compute release tag/name
+        id: meta
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG="build-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=Build ${GITHUB_RUN_NUMBER} (${SHORT_SHA})" >> "$GITHUB_OUTPUT"
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: false
+          generate_release_notes: false
+          files: |
+            release_assets/**/*
