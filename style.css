@@ -144,6 +144,7 @@ thead th, tbody td{
   z-index: 2;
   background: var(--table-head-bg);
   letter-spacing: 0.2px;
+  line-height: 20px;
 }
 
 #tbl tbody td{ border-bottom: 1px solid var(--row-border); }

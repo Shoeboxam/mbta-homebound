@@ -26,23 +26,38 @@ export function renderTimeCell(cell) {
     return `<span class="predTime" title="${escapeHtml(title)}">${escapeHtml(t)}</span>`;
 }
 
-const colors = {
-    Arlington: "--gl-green",
-    Park: "--rl-red",
-    Layover: "--gray-dark",
-    Harvard: "--rl-red",
-    Home: "--bus-yellow",
-}
+const borderPairs = {
+  Arlington: ["--gl-green", "--table-head-bg"],
+  Park: ["--gl-green", "--rl-red"],
+  Layover: ["--table-head-bg", "--rl-red"],
+  Harvard: ["--bus-yellow", "--rl-red"],
+  Home: ["--bus-yellow", "--table-head-bg"],
+};
 
 export function renderHeader(theadEl, includeHome) {
-    const cols = includeHome
-        ? ["Arlington", "Park", "Layover", "Harvard", "Home"]
-        : ["Arlington", "Park", "Layover", "Harvard"];
-    const header = cols.map((c) => {
-        const cls = colors[c] ? ` style="border-bottom: 2px solid var(${colors[c]});"` : "";
-        return `<th${cls}>${escapeHtml(c)}</th>`;
-    }).join("");
-    theadEl.innerHTML = `<tr>${header}</tr>`;
+  const cols = includeHome
+    ? ["Arlington", "Park", "Layover", "Harvard", "Home"]
+    : ["Arlington", "Park", "Layover", "Harvard"];
+
+  const header = cols
+    .map((c) => {
+      const pair = borderPairs[c];
+      const style = pair
+        ? ` style="
+            background-image: linear-gradient(to bottom, var(${pair[1]}), var(${pair[1]})),
+                              linear-gradient(to bottom, var(${pair[0]}), var(${pair[0]}));
+            background-size: 100% 5px, 100% 5px;
+            background-position: left bottom, left calc(100% - 5px);
+            background-repeat: no-repeat;
+            padding-bottom:10px;
+          "`
+        : "";
+
+      return `<th${style}>${escapeHtml(c)}</th>`;
+    })
+    .join("");
+
+  theadEl.innerHTML = `<tr>${header}</tr>`;
 }
 
 export function renderAlerts(alertsEl, headers, counts) {
