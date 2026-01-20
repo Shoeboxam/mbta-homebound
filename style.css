@@ -35,7 +35,6 @@ main{ max-width: 500px; margin: 0 auto; }
 
 /* Alerts (keep Red theme) */
 .alerts{
-  border: 2px solid color-mix(in oklab, var(--rl-red) 65%, currentColor 10%);
   border-radius: 12px;
   padding: 10px 12px;
   margin-bottom: 12px;

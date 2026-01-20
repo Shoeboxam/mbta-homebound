@@ -69,7 +69,7 @@ export function renderAlerts(alertsEl, headers, counts) {
     const lines = headers.slice(0, 6).map((h) => `<div class="line">${escapeHtml(h)}</div>`).join("");
     const more = headers.length > 6 ? `<div class="line">…and ${headers.length - 6} more</div>` : "";
     alertsEl.hidden = false;
-    alertsEl.innerHTML = `<div class="title">Service alert</div>${lines}${more}`;
+    alertsEl.innerHTML = `${lines}${more}`;
 }
 
 export function renderTableBody(tbodyEl, groups, includeHome, expandedTripId) {
