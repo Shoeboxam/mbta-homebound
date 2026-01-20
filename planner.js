@@ -68,7 +68,7 @@ export function fmtHHMM(d) {
 }
 
 export function padWait(min) {
-    return `${String(min).padStart(2, " ")} min`;
+    return `${String(min).padStart(2, " ")} min`;
 }
 
 // upperBound by greenPairs[].toT (Park arrival)

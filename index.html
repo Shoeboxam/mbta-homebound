@@ -5,7 +5,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <title>Homebound Arrival Times</title>
+    <title>Homebound Arrivals</title>
 
     <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%23da291c'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='18'%20fill='white'/%3E%3Ctext%20x='32'%20y='38'%20text-anchor='middle'%20font-family='Helvetica,Arial,sans-serif'%20font-size='18'%20font-weight='700'%20fill='%23000'%3ET%3C/text%3E%3C/svg%3E" />
@@ -15,7 +15,10 @@
 
 <body>
     <main>
-        <h1 class="pageTitle">Homebound Arrival Times</h1>
+        <header class="stationBar">
+            <div class="stationTitle">HOMEBOUND ARRIVALS</div>
+            <!-- <div class="stationRule"></div> -->
+        </header>
 
         <div id="alerts" class="alerts" hidden></div>
 
@@ -110,18 +113,18 @@
                                 </label>
 
                                 <label class="field">
-                                <span id="notifyExampleLabel" class="label">Example</span>
-                                <div id="notifyExampleRow" class="notifyExampleRow">
-                                    <div class="notifyExampleBox">
-                                        <div class="notifyExampleTitle">Commute</div>
-                                        <div id="notifyExampleText" class="notifyExampleText">Park --:-- arrival. No
-                                            alerts.
+                                    <span id="notifyExampleLabel" class="label">Example</span>
+                                    <div id="notifyExampleRow" class="notifyExampleRow">
+                                        <div class="notifyExampleBox">
+                                            <div class="notifyExampleTitle">Commute</div>
+                                            <div id="notifyExampleText" class="notifyExampleText">Park --:-- arrival. No
+                                                alerts.
+                                            </div>
                                         </div>
-                                    </div>
 
-                                    <button id="testNotify" type="button" class="btn">Test</button>
-                                </div>
-                            </label>
+                                        <button id="testNotify" type="button" class="btn">Test</button>
+                                    </div>
+                                </label>
                             </div>
 
                             <div id="notifySuppressed" style="margin-top:6px"></div>

@@ -3,12 +3,15 @@
 
   --rl-red: #da291c;
   --gl-green: #00843d;
+  --bus-yellow: #FFC72C;
+  --sl-gray: #7C878E;
+  --gray-dark: #212322;
   --panel-border: color-mix(in oklab, currentColor 22%, transparent);
   --row-border: color-mix(in oklab, currentColor 10%, transparent);
 
   /* Table uses Green */
-  --table-soft-bg: color-mix(in oklab, var(--gl-green) 6%, Canvas 94%);
-  --table-head-bg: color-mix(in oklab, var(--gl-green) 10%, Canvas 90%);
+  --table-soft-bg: color-mix(in oklab, black 6%, Canvas 94%);
+  --table-head-bg: color-mix(in oklab, black 10%, Canvas 90%);
 
   /* Stale underline should be RED (not orange) */
   --stale: var(--rl-red);
@@ -44,9 +47,7 @@ main{ max-width: 500px; margin: 0 auto; }
 .alerts .line{ margin: 6px 0; line-height: 1.25; }
 
 .tableWrap{
-  border-radius: 12px;
   overflow: auto;
-  border: 2px solid var(--panel-border);
   box-shadow: 0 10px 24px color-mix(in oklab, #000 12%, transparent);
 }
 
@@ -87,16 +88,43 @@ main{ max-width: 500px; margin: 0 auto; }
 }
 
 /* Table */
-#tbl{
+table{
   width: 100%;
-  border-collapse: collapse;
-  font-size: 18px;
-  line-height: 1.25;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 375px;
+  overflow: auto;
+}
+#tbl {
+    table-layout: fixed;
+}
+#tableWrap {
+    margin-left: -16px;
+    margin-right: -16px;
+}
+/* Platform sign header */
+thead th{
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(6px);
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 12px;
+  padding: 10px 10px;
 }
 
-#tbl th, #tbl td{
+/* Keep right-alignment consistent with your layout */
+thead th, tbody td{
   text-align: right;
-  padding: 10px 12px;
+}
+
+
+#tbl th, #tbl td{
+  text-align: center;
+  padding: 10px 0px;
   white-space: nowrap;
 }
 
@@ -115,7 +143,6 @@ main{ max-width: 500px; margin: 0 auto; }
   top: 0;
   z-index: 2;
   background: var(--table-head-bg);
-  border-bottom: 2px solid var(--gl-green);
   letter-spacing: 0.2px;
 }
 
@@ -443,7 +470,7 @@ tr.clickable{ cursor: pointer; }
 /* Predicted times are underlined; scheduled time is in title tooltip */
 .predTime{
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: 3px;
   text-decoration-thickness: 2px;
 }
 
@@ -485,4 +512,27 @@ tr.clickable{ cursor: pointer; }
 
 .notifyConfig .field{
   margin: 0;           /* gap handles spacing */
+}
+
+.stationBar{
+  max-width: 500px;
+  margin: 0 auto 12px auto;
+  padding: 12px 12px 0 12px;
+  font-family: Helvetica, Arial, sans-serif;
+  text-align: center;
+}
+
+.stationTitle{
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.stationRule{
+  height: 3px;
+  background: #da291c; /* MBTA Red */
+  border-radius: 999px;
+  margin: 10px auto 0 auto;
+  width: 100%;
 }
