@@ -368,18 +368,30 @@ tr.clickable{ cursor: pointer; }
 
 .chips{
   display: flex;
-  flex-wrap: wrap;
   gap: 8px;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  margin-top: 6px;
 }
+
 .chip{
-  font: inherit;
-  padding: 6px 10px;
+  border: 1px solid rgba(255,255,255,0.22);
+  background: rgba(0,0,0,0.10);
+  color: inherit;
   border-radius: 999px;
-  border: 1px solid color-mix(in oklab, currentColor 25%, transparent);
-  background: color-mix(in oklab, Canvas 92%, var(--rl-red) 8%);
+  padding: 6px 10px;
+  font-weight: 700;
+  cursor: pointer;
 }
-.chipGhost{ background: transparent; opacity: 0.9; }
+
+.chip:hover{
+  background: rgba(255,255,255,0.10);
+}
+
+.chip:active{
+  transform: translateY(1px);
+}
+
 
 .footerNote{
   margin-top: 10px;

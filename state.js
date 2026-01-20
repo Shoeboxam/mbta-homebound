@@ -185,6 +185,7 @@ export function bindControls(state, onChange) {
             if (r.checked) emit({ notifyMode: r.value });
         });
     }
+    renderStartChips({ state, emit });
 
     els.resetBtn?.addEventListener("click", () => {
         const next = saveState({ ...DEFAULTS, __replaceAll: true });
@@ -192,4 +193,65 @@ export function bindControls(state, onChange) {
     });
 
     return els;
+}
+function fmt2(n) { return String(n).padStart(2, "0"); }
+
+function formatStartOverride(d) {
+  // YYYY/MM/DD HH:MM
+  return `${d.getFullYear()}/${fmt2(d.getMonth() + 1)}/${fmt2(d.getDate())} ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
+}
+
+function parseHHMMToday(hhmm, baseDate = new Date()) {
+  const m = String(hhmm || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const hh = Number(m[1]), mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  const d = new Date(baseDate);
+  d.setHours(hh, mm, 0, 0);
+  return d;
+}
+
+function renderStartChips({ emit, getState }) {
+  const host = document.getElementById("startChips");
+  if (!host) return;
+
+  const mk = (label, patchFn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.textContent = label;
+
+    b.addEventListener("click", () => {
+      const patch = patchFn();
+      if (!patch) return;
+
+      // 1) update state via your existing pipeline
+      emit(patch);
+
+      // 2) after emit finishes its synchronous work + any immediate rerender,
+      // force the textbox to reflect the *actual current state*.
+      setTimeout(() => {
+        const s = getState ? getState() : null;
+        const v = s?.startOverride ?? patch.startOverride ?? "";
+        const inp = document.getElementById("startOverride");
+        if (inp) inp.value = v || "";
+      }, 0);
+    });
+
+    return b;
+  };
+
+  host.innerHTML = "";
+  host.append(
+    mk("Now", () => ({ startOverride: formatStartOverride(new Date()) })),
+    mk("16:50", () => {
+      const d = parseHHMMToday("16:50");
+      return d ? { startOverride: formatStartOverride(d) } : null;
+    }),
+    mk("17:10", () => {
+      const d = parseHHMMToday("17:10");
+      return d ? { startOverride: formatStartOverride(d) } : null;
+    }),
+    mk("Clear", () => ({ startOverride: "" }))
+  );
 }

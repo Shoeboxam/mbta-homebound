@@ -2,6 +2,8 @@
 
 A tiny MBTA commute helper for Boston.
 
+https://shoeboxam.github.io/mbta-homebound/
+
 It shows, for each upcoming **bus 75** departure from Harvard, the best connecting **Red Line** arrival at Park Street (with a minimum Harvard layover), and the last feasible **Green Line** arrival at Park Street before that Red connection. It can run as a static web page (GitHub Pages) and as a packaged Electron desktop app with optional notifications.
 
 ## Features
