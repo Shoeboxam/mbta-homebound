@@ -6,9 +6,9 @@
     "scripts": {
         "dev": "npx http-server . -p 8000",
         "electron:dev": "ELECTRON_START_URL=http://localhost:8000 electron .",
-        "start:electron": "npm run build:web && electron .",
-        "dist:electron": "npm run build:web && electron-builder --publish never",
-        "release:electron": "npm run build:web && electron-builder --publish always",
+        "start:electron": "electron .",
+        "dist:electron": "electron-builder --publish never",
+        "release:electron": "electron-builder --publish always",
         "icons": "node scripts/make-icons.js"
     },
     "devDependencies": {

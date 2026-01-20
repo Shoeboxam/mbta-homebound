@@ -183,7 +183,7 @@ function syncNotifyUiAvailability() {
         if (!(inElec && !mobile) && !mobile) {
             const url =
                 (state.electronReleaseUrl || "").trim() ||
-                "https://github.com/YOUR_OWNER/YOUR_REPO/releases/latest";
+                "https://github.com/shoeboxam/mbta-homebound/releases/latest";
             el.electronHint.innerHTML =
                 `Notifications require the desktop app. <a href="${escapeHtml(url)}" target="_blank" rel="noopener">Download the latest release</a>.`;
         } else {
