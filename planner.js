@@ -17,19 +17,82 @@ import {
     loadRelevantAlertsWithCounts,
 } from "./mbta.js";
 
+// planner.js
+
 function parseStartOverride(s) {
-    if (!s) return null;
-    if (/[zZ]|[+\-]\d\d:\d\d$/.test(s)) {
-        const d = new Date(s);
-        return isNaN(d) ? null : d;
-    }
-    const norm = s.replace(" ", "T");
-    const m = norm.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
-    if (!m) return null;
-    const [_, yy, mm, dd, hh, mi] = m;
-    const d = new Date(Number(yy), Number(mm) - 1, Number(dd), Number(hh), Number(mi), 0, 0);
-    return isNaN(d) ? null : d;
+  if (!s) return null;
+  const t = String(s).trim();
+  if (!t) return null;
+
+  // strict: must be YYYY-MM-DDTHH:MM (or space)
+  const norm = t.replace(" ", "T");
+  const m = norm.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!m) return null;
+
+  const [, yy, mm, dd, hh, mi] = m;
+  const d = new Date(Number(yy), Number(mm) - 1, Number(dd), Number(hh), Number(mi), 0, 0);
+  return isNaN(d) ? null : d;
 }
+
+export function getNowInfo(state) {
+  const raw = (state.startOverride || "").trim();
+  const parsed = parseStartOverride(raw);
+  if (raw && !parsed) {
+    return { now: floorToMinute(new Date()), overrideOk: false };
+  }
+  return { now: floorToMinute(parsed || new Date()), overrideOk: true };
+}
+
+
+function hhmmLocal(d) {
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function addMinutes(d, min) {
+    return new Date(d.getTime() + min * 60_000);
+}
+
+function ymdLocal(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// Build schedule query “slices” so min_time/max_time always makes sense per serviceDate.
+// Example:
+//   start=23:10, end=02:10 (next day)
+//   slices = [
+//     { date: <start day>, min:"22:40", max:"23:59" },
+//     { date: <end day>,   min:"00:00", max:"02:40" },
+//   ]
+function scheduleSlicesForWindow(start, end, padMin = 30) {
+    const startPad = addMinutes(start, -padMin);
+    const endPad = addMinutes(end, padMin);
+
+    const slices = [];
+    const startY = ymdLocal(startPad);
+    const endY = ymdLocal(endPad);
+
+    if (startY === endY) {
+        slices.push({ date: startY, min: hhmmLocal(startPad), max: hhmmLocal(endPad) });
+        return slices;
+    }
+
+    // First day: from startPad -> end of day
+    slices.push({ date: startY, min: hhmmLocal(startPad), max: "23:59" });
+
+    // Middle days (rare, but safe)
+    let cur = new Date(startPad);
+    cur.setHours(0, 0, 0, 0);
+    cur.setDate(cur.getDate() + 1);
+    while (ymdLocal(cur) !== endY) {
+        slices.push({ date: ymdLocal(cur), min: "00:00", max: "23:59" });
+        cur.setDate(cur.getDate() + 1);
+    }
+
+    // Last day: start of day -> endPad
+    slices.push({ date: endY, min: "00:00", max: hhmmLocal(endPad) });
+
+    return slices;
+}
+
 
 function floorToMinute(d) {
     const x = new Date(d);
@@ -45,16 +108,22 @@ export function serviceDatesForWindow(start, end) {
     const toYMD = (d) =>
         `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-    const s = new Set();
-    const a = new Date(start);
-    const b = new Date(end);
-    s.add(toYMD(a));
-    s.add(toYMD(b));
-    a.setDate(a.getDate() - 1);
-    b.setDate(b.getDate() - 1);
-    s.add(toYMD(a));
-    s.add(toYMD(b));
-    return [...s].sort();
+    const dates = new Set();
+    dates.add(toYMD(start));
+    dates.add(toYMD(end));
+
+    // Only include previous day if the window crosses midnight OR is very early AM,
+    // where “service day” can still be previous date for late-night trips.
+    const crossesMidnight = toYMD(start) !== toYMD(end);
+    const earlyAM = start.getHours() < 3 || end.getHours() < 3;
+
+    if (crossesMidnight || earlyAM) {
+        const prev = new Date(start);
+        prev.setDate(prev.getDate() - 1);
+        dates.add(toYMD(prev));
+    }
+
+    return [...dates].sort();
 }
 
 export function timeCell(text, pred = false, schedText = "") {
@@ -132,10 +201,35 @@ function pickEarliestByTripId(pairs) {
     }
     return m;
 }
+// Pick the schedule pair for a tripId that best matches the window.
+// Preference order:
+// 1) any pair whose fromT is within [start,end] (choose earliest within window)
+// 2) otherwise, choose the pair whose fromT is closest to start
+function pickSchedBestForWindow(schedPairs, start, end) {
+    const m = new Map(); // tripId -> pair
+    for (const p of schedPairs) {
+        const prev = m.get(p.tripId);
+        if (!prev) { m.set(p.tripId, p); continue; }
 
-// Partial merge: overlay predictions per-stop over schedules, and include pred-only trips
-function mergePairsPartial(schedPairs, predFromMap, predToMap) {
-    const schedMap = pickEarliestByTripId(schedPairs);
+        const inWin = p.fromT >= start && p.fromT <= end;
+        const prevIn = prev.fromT >= start && prev.fromT <= end;
+
+        if (inWin && !prevIn) { m.set(p.tripId, p); continue; }
+        if (inWin && prevIn && p.fromT < prev.fromT) { m.set(p.tripId, p); continue; }
+
+        if (!inWin && !prevIn) {
+            const d1 = Math.abs(p.fromT - start);
+            const d0 = Math.abs(prev.fromT - start);
+            if (d1 < d0) m.set(p.tripId, p);
+        }
+    }
+    return m;
+}
+
+// Partial merge: overlay predictions per-stop over schedules, and include pred-only trips.
+// IMPORTANT: schedule selection is window-aware to prevent cross-date tripId collisions.
+function mergePairsPartial(schedPairs, predFromMap, predToMap, start, end) {
+    const schedMap = pickSchedBestForWindow(schedPairs, start, end);
 
     const tripIds = new Set([
         ...schedMap.keys(),
@@ -174,11 +268,49 @@ function mergePairsPartial(schedPairs, predFromMap, predToMap) {
     return out;
 }
 
+function chooseCloserToStart(prevT, nextT, start) {
+    const d0 = Math.abs(prevT - start);
+    const d1 = Math.abs(nextT - start);
+    return d1 < d0;
+}
+
+function upsertBusHarv(map, tid, v, start, end) {
+    const prev = map.get(tid);
+    if (!prev) { map.set(tid, v); return; }
+
+    const inWin = v.depHarv >= start && v.depHarv <= end;
+    const prevIn = prev.depHarv >= start && prev.depHarv <= end;
+
+    if (inWin && !prevIn) { map.set(tid, v); return; }
+    if (inWin && prevIn && v.depHarv < prev.depHarv) { map.set(tid, v); return; }
+
+    if (!inWin && !prevIn && chooseCloserToStart(prev.depHarv, v.depHarv, start)) {
+        map.set(tid, v);
+    }
+}
+
+function upsertBusHome(map, tid, t, start, end) {
+    const prev = map.get(tid);
+    if (!prev) { map.set(tid, t); return; }
+
+    const inWin = t >= start && t <= end;
+    const prevIn = prev >= start && prev <= end;
+
+    if (inWin && !prevIn) { map.set(tid, t); return; }
+    if (inWin && prevIn && t < prev) { map.set(tid, t); return; }
+
+    if (!inWin && !prevIn && chooseCloserToStart(prev, t, start)) {
+        map.set(tid, t);
+    }
+}
+
+
 export async function buildGroupsForWindow(state, cfg) {
     const includeHome = Boolean((state.homeStop || "").trim());
-    const start = getNow(state);
+    const { now: start, overrideOk } = getNowInfo(state);
     const end = new Date(start.getTime() + cfg.hours * 3600 * 1000);
-    const dates = serviceDatesForWindow(start, end);
+    const scheduleSlices = scheduleSlicesForWindow(start, end, 30);
+
 
     const [parkKids, harvKids, arlKids] = await Promise.all([
         childStops(state, cfg.park),
@@ -186,28 +318,26 @@ export async function buildGroupsForWindow(state, cfg) {
         childStops(state, cfg.arlington),
     ]);
 
-    const alertInfo = await loadRelevantAlertsWithCounts(state, cfg, parkKids, harvKids, arlKids);
-
     const homeKids = includeHome
         ? await childStops(state, state.homeStop).catch(() => new Set([state.homeStop]))
         : new Set();
+
+    const alertInfo = await loadRelevantAlertsWithCounts(state, cfg, parkKids, harvKids, arlKids);
 
     /* ---------------- BUS schedules always ---------------- */
     const schedBusByTrip = new Map();
     const schedHomeByTrip = new Map();
 
-    for (const d of dates) {
-        const sh = await loadSchedulesBusHarv(state, cfg, d);
+    for (const sl of scheduleSlices) {
+        const sh = await loadSchedulesBusHarv(state, cfg, sl.date, harvKids, sl.min, sl.max);
         for (const [tid, v] of sh.entries()) {
-            const prev = schedBusByTrip.get(tid);
-            if (!prev || v.depHarv < prev.depHarv) schedBusByTrip.set(tid, v);
+            upsertBusHarv(schedBusByTrip, tid, v, start, end);
         }
 
         if (includeHome) {
-            const home = await loadSchedulesBusHome(state, cfg, d, state.homeStop);
+            const home = await loadSchedulesBusHome(state, cfg, sl.date, homeKids, sl.min, sl.max);
             for (const [tid, t] of home.entries()) {
-                const prev = schedHomeByTrip.get(tid);
-                if (!prev || t < prev) schedHomeByTrip.set(tid, t);
+                upsertBusHome(schedHomeByTrip, tid, t, start, end);
             }
         }
     }
@@ -220,11 +350,13 @@ export async function buildGroupsForWindow(state, cfg) {
         const stopSet = new Set([...harvKids]);
         if (includeHome) for (const s of homeKids) stopSet.add(s);
 
-        const pred = await loadPredictions(state, cfg.busRoute, csvFromSet(stopSet));
+        const { data: predData, stopParent } = await loadPredictions(state, cfg.busRoute, csvFromSet(stopSet));
         const tripMap = buildTripStopTimesFromPred(
-            pred,
+            predData,
             { harv: harvKids, home: includeHome ? homeKids : null },
-            cfg.predWindowMin
+            cfg.predWindowMin,
+            stopParent,
+            start,
         );
 
         const busPred = busTripsFromPred(tripMap, includeHome);
@@ -244,23 +376,33 @@ export async function buildGroupsForWindow(state, cfg) {
 
     /* ---------------- GREEN schedules always ---------------- */
     let schedGreenPairs = [];
-    for (const d of dates) {
-        schedGreenPairs.push(...(await loadSchedulesGreenPairs(state, cfg, d, arlKids, parkKids)));
+    for (const sl of scheduleSlices) {
+        schedGreenPairs.push(...(await loadSchedulesGreenPairs(state, cfg, sl.date, arlKids, parkKids, sl.min, sl.max)));
     }
 
     /* ---------------- GREEN predictions optional (partial overlay) ---------------- */
     let greenPairs = [];
     if (canUsePredictions(state)) {
         const stopSet = new Set([...arlKids, ...parkKids]);
-        const pred = await loadPredictions(state, cfg.greenRoutes.join(","), csvFromSet(stopSet));
-        const tripMap = buildTripStopTimesFromPred(pred, { arl: arlKids, park: parkKids }, cfg.predWindowMin);
+        const { data: predData, stopParent } = await loadPredictions(
+            state,
+            cfg.greenRoutes.join(","),
+            csvFromSet(stopSet)
+        );
+        const tripMap = buildTripStopTimesFromPred(
+            predData,
+            { arl: arlKids, park: parkKids },
+            cfg.predWindowMin,
+            stopParent,
+            start,
+        );
 
         const predArl = predStopTimesFromTripMap(tripMap, "arl");
         const predPark = predStopTimesFromTripMap(tripMap, "park");
 
-        greenPairs = mergePairsPartial(schedGreenPairs, predArl, predPark);
+        greenPairs = mergePairsPartial(schedGreenPairs, predArl, predPark, start, end);
     } else {
-        greenPairs = mergePairsPartial(schedGreenPairs, null, null);
+        greenPairs = mergePairsPartial(schedGreenPairs, null, null, start, end);
     }
 
     // Binary-search by Park arrival
@@ -268,23 +410,33 @@ export async function buildGroupsForWindow(state, cfg) {
 
     /* ---------------- RED schedules always ---------------- */
     let schedRedPairs = [];
-    for (const d of dates) {
-        schedRedPairs.push(...(await loadSchedulesRedPairs(state, cfg, d, parkKids, harvKids)));
+    for (const sl of scheduleSlices) {
+        schedRedPairs.push(...(await loadSchedulesRedPairs(state, cfg, sl.date, parkKids, harvKids, sl.min, sl.max)));
     }
 
     /* ---------------- RED predictions optional (partial overlay) ---------------- */
     let redPairs = [];
     if (canUsePredictions(state)) {
         const stopSet = new Set([...parkKids, ...harvKids]);
-        const pred = await loadPredictions(state, cfg.redRoute, csvFromSet(stopSet));
-        const tripMap = buildTripStopTimesFromPred(pred, { park: parkKids, harv: harvKids }, cfg.predWindowMin);
+        const { data: predData, stopParent } = await loadPredictions(
+            state,
+            cfg.redRoute,
+            csvFromSet(stopSet)
+        );
+        const tripMap = buildTripStopTimesFromPred(
+            predData,
+            { park: parkKids, harv: harvKids },
+            cfg.predWindowMin,
+            stopParent,
+            start,
+        );
 
         const predPark = predStopTimesFromTripMap(tripMap, "park");
         const predHarv = predStopTimesFromTripMap(tripMap, "harv");
 
-        redPairs = mergePairsPartial(schedRedPairs, predPark, predHarv);
+        redPairs = mergePairsPartial(schedRedPairs, predPark, predHarv, start, end);
     } else {
-        redPairs = mergePairsPartial(schedRedPairs, null, null);
+        redPairs = mergePairsPartial(schedRedPairs, null, null, start, end);
     }
 
     // Filter to window by Park arrival
@@ -523,5 +675,6 @@ export async function buildGroupsForWindow(state, cfg) {
         alertsCountTotal: alertInfo.headers.length,
         groups: out,
         groupsAvailable: redPairs.length > 0,
+        overrideOk,
     };
 }

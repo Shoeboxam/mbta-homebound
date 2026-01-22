@@ -13,17 +13,27 @@ export function escapeHtml(s) {
 
 // cell: {text, pred, schedText} or string
 export function renderTimeCell(cell) {
-    if (cell == null) return "";
-    if (typeof cell === "string") return escapeHtml(cell);
+  if (cell == null) return "";
+  if (typeof cell === "string") return escapeHtml(cell);
 
-    const t = cell.text || "";
-    if (!cell.pred || !t || t === "—") return escapeHtml(t);
+  const tRaw = (cell.text || "").trim();
+  const schedRaw = (cell.schedText || "").trim();
 
-    const sched = (cell.schedText || "").trim();
-    const hasSched = sched && sched !== "—";
+  // If text is missing but schedText exists, render schedText (no hover/underline).
+  if (!tRaw) {
+    if (schedRaw && schedRaw !== "—") return escapeHtml(schedRaw);
+    return "";
+  }
 
-    const title = hasSched ? `Scheduled ${sched}` : "No scheduled time available";
-    return `<span class="predTime" title="${escapeHtml(title)}">${escapeHtml(t)}</span>`;
+  // Never underline / title for dashes
+  if (tRaw === "—") return "—";
+
+  // Only predictions get underlines + tooltips (as before)
+  if (!cell.pred) return escapeHtml(tRaw);
+
+  const hasSched = schedRaw && schedRaw !== "—";
+  const title = hasSched ? `Scheduled ${schedRaw}` : "No scheduled time available";
+  return `<span class="predTime" title="${escapeHtml(title)}">${escapeHtml(tRaw)}</span>`;
 }
 
 const borderPairs = {

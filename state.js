@@ -197,8 +197,8 @@ export function bindControls(state, onChange) {
 function fmt2(n) { return String(n).padStart(2, "0"); }
 
 function formatStartOverride(d) {
-  // YYYY/MM/DD HH:MM
-  return `${d.getFullYear()}/${fmt2(d.getMonth() + 1)}/${fmt2(d.getDate())} ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
+  // YYYY-MM-DD HH:MM
+  return `${d.getFullYear()}-${fmt2(d.getMonth() + 1)}-${fmt2(d.getDate())} ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
 }
 
 function parseHHMMToday(hhmm, baseDate = new Date()) {

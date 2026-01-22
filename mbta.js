@@ -18,12 +18,19 @@ export function csvFromSet(set) {
   return [...set].join(",");
 }
 
+function csvFromAnySet(set) {
+  return [...new Set([...set])].join(",");
+}
+
+
 export async function fetchJson(state, url, params = null) {
   const u = new URL(url);
   if (params) for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
 
   const headers = { Accept: "application/vnd.api+json" };
-  if (state?.apiKey) headers["x-api-key"] = state.apiKey;
+  if (state?.apiKey) {
+    u.searchParams.set("api_key", state.apiKey);
+  }
 
   const res = await fetch(u.toString(), { headers });
   if (!res.ok) {
@@ -31,6 +38,43 @@ export async function fetchJson(state, url, params = null) {
     throw new Error(`HTTP ${res.status} ${res.statusText}\n${text}`.trim());
   }
   return await res.json();
+}
+
+
+function buildStopParentMap(included) {
+  const m = new Map(); // stopId -> parentStationId
+  for (const inc of included || []) {
+    if (inc.type !== "stop") continue;
+    const id = inc.id;
+    if (!id) continue;
+    const p = inc.attributes?.parent_station;
+    if (p) m.set(id, p);
+  }
+  return m;
+}
+
+export async function fetchAllWithIncluded(state, path, params) {
+  let url = `${BASE}${path}`;
+  let p = { ...params };
+  const out = [];
+  const includedByKey = new Map(); // `${type}:${id}` -> resource
+
+  while (true) {
+    const payload = await fetchJson(state, url, p);
+    out.push(...(payload.data || []));
+
+    for (const inc of payload.included || []) {
+      if (!inc?.type || !inc?.id) continue;
+      includedByKey.set(`${inc.type}:${inc.id}`, inc);
+    }
+
+    const next = payload.links && payload.links.next;
+    if (!next) break;
+    url = next.startsWith("/") ? `${BASE}${next}` : next;
+    p = null;
+  }
+
+  return { data: out, included: [...includedByKey.values()] };
 }
 
 export async function fetchAll(state, path, params) {
@@ -47,6 +91,34 @@ export async function fetchAll(state, path, params) {
     p = null;
   }
   return out;
+}
+
+// mbta.js
+const allCache = new Map(); // key -> { expires, data }
+
+function stableKey(path, params, apiKey) {
+  // apiKey matters because it can change rate limits / access patterns.
+  // if you prefer, omit apiKey from the key and just clear cache on key changes.
+  const p = params ? Object.entries(params).sort(([a],[b]) => a.localeCompare(b)) : [];
+  return JSON.stringify({ path, p, apiKey: apiKey || "" });
+}
+
+const SCHEDULE_CACHE = 6 * 60 * 60 * 1000;
+
+export async function fetchAllCached(state, path, params, ttlMs) {
+  const key = stableKey(path, params, state?.apiKey);
+  const now = Date.now();
+  const hit = allCache.get(key);
+  if (hit && hit.expires > now) return hit.data;
+
+  const data = await fetchAll(state, path, params);
+  allCache.set(key, { expires: now + ttlMs, data });
+  return data;
+}
+
+// optional helper if apiKey changes
+export function clearFetchAllCache() {
+  allCache.clear();
 }
 
 export async function childStops(state, parentStopId) {
@@ -69,17 +141,19 @@ export async function childStops(state, parentStopId) {
 /* ---------------- Predictions helpers ---------------- */
 
 export async function loadPredictions(state, routeCsv, stopCsv) {
-  return await fetchAll(state, "/predictions", {
+    const { data, included } = await fetchAllWithIncluded(state, "/predictions", {
     "filter[route]": routeCsv,
     "filter[stop]": stopCsv,
     "page[limit]": "250",
+    "include": "stop",
   });
+  return { data, stopParent: buildStopParentMap(included) };
 }
 
 // Build Map<tripId, { dir, stops: {name:{t, seq, arr, dep}} }>
-export function buildTripStopTimesFromPred(predData, stopSetsByName, predWindowMin = 120) {
+export function buildTripStopTimesFromPred(predData, stopSetsByName, predWindowMin = 120, stopParent = null, nowOverride = null) {
   const out = new Map();
-  const now = new Date();
+  const now = nowOverride instanceof Date ? nowOverride : new Date();
   const horizon = new Date(now.getTime() + predWindowMin * 60_000);
 
   const inHorizon = (t) => t && t >= new Date(now.getTime() - 60_000) && t <= horizon;
@@ -88,6 +162,8 @@ export function buildTripStopTimesFromPred(predData, stopSetsByName, predWindowM
     const tripId = p.relationships?.trip?.data?.id;
     const stopId = p.relationships?.stop?.data?.id;
     if (!tripId || !stopId) continue;
+
+    const effStopId = stopParent?.get(stopId) || stopId;
 
     const a = p.attributes || {};
     const arr = parseIso(a.arrival_time);
@@ -106,7 +182,7 @@ export function buildTripStopTimesFromPred(predData, stopSetsByName, predWindowM
     if (rec.dir == null && dir != null) rec.dir = dir;
 
     for (const [name, set] of Object.entries(stopSetsByName)) {
-      if (set && set.has(stopId)) {
+      if (set && set.has(effStopId)) {
         const prev = rec.stops[name];
         if (!prev || t < prev.t) rec.stops[name] = { t, seq, arr, dep };
       }
@@ -159,13 +235,20 @@ export function busTripsFromPred(tripMap, includeHome) {
 /* ---------------- Schedules loaders ---------------- */
 
 // [{tripId, fromT(park), toT(harv)}]
-export async function loadSchedulesRedPairs(state, cfg, serviceDate, parkKids, harvKids) {
-  const data = await fetchAll(state, "/schedules", {
+export async function loadSchedulesRedPairs(state, cfg, serviceDate, parkKids, harvKids, minTime, maxTime) {
+  const stopCsv = csvFromAnySet(new Set([...parkKids, ...harvKids]));
+
+  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
     "filter[route]": cfg.redRoute,
-    "filter[stop]": `${cfg.park},${cfg.harvard}`,
+    "filter[stop]": stopCsv,
     "filter[date]": serviceDate,
+    "filter[min_time]": minTime,
+    "filter[max_time]": maxTime,
     "page[limit]": "450",
+    "include": "stop",
   });
+
+  const stopParent = buildStopParentMap(included);
 
   const trips = new Map();
   for (const item of data) {
@@ -173,40 +256,49 @@ export async function loadSchedulesRedPairs(state, cfg, serviceDate, parkKids, h
     const stopId = item.relationships?.stop?.data?.id;
     if (!tripId || !stopId) continue;
 
+    const eff = stopParent.get(stopId) || stopId;
+
     const t = bestTimeFromAttrs(item.attributes || {});
     if (!t) continue;
 
-    const seq = item.attributes?.stop_sequence;
+    const rawSeq = item.attributes?.stop_sequence;
+    const seq = rawSeq == null ? null : Number(rawSeq);
+    const seqOk = Number.isFinite(seq) ? seq : null;
+
     const rec = trips.get(tripId) || {};
-    if (parkKids.has(stopId)) { rec.park_t = t; rec.park_seq = seq; }
-    if (harvKids.has(stopId)) { rec.harv_t = t; rec.harv_seq = seq; }
+    if (parkKids.has(eff)) { rec.park_t = t; rec.park_seq = seqOk; }
+    if (harvKids.has(eff)) { rec.harv_t = t; rec.harv_seq = seqOk; }
     trips.set(tripId, rec);
   }
 
   const out = [];
   for (const [tripId, rec] of trips.entries()) {
-    if (
-      rec.park_t && rec.harv_t &&
-      Number.isInteger(rec.park_seq) && Number.isInteger(rec.harv_seq) &&
-      rec.park_seq < rec.harv_seq &&
-      rec.park_t < rec.harv_t // extra safety
-    ) {
-      out.push({ tripId, fromT: rec.park_t, toT: rec.harv_t });
-    }
+    if (!rec.park_t || !rec.harv_t) continue;
+    if (!(rec.park_t < rec.harv_t)) continue;
+    if (rec.park_seq != null && rec.harv_seq != null && !(rec.park_seq < rec.harv_seq)) continue;
+    out.push({ tripId, fromT: rec.park_t, toT: rec.harv_t });
   }
 
   out.sort((a, b) => a.fromT - b.fromT);
   return out;
 }
 
+
 // [{tripId, fromT(arl), toT(park)}]
-export async function loadSchedulesGreenPairs(state, cfg, serviceDate, arlKids, parkKids) {
-  const data = await fetchAll(state, "/schedules", {
+export async function loadSchedulesGreenPairs(state, cfg, serviceDate, arlKids, parkKids, minTime, maxTime) {
+  const stopCsv = csvFromAnySet(new Set([...arlKids, ...parkKids]));
+
+  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
     "filter[route]": cfg.greenRoutes.join(","),
-    "filter[stop]": `${cfg.arlington},${cfg.park}`,
+    "filter[stop]": stopCsv,
     "filter[date]": serviceDate,
+    "filter[min_time]": minTime,
+    "filter[max_time]": maxTime,
     "page[limit]": "650",
+    "include": "stop",
   });
+
+  const stopParent = buildStopParentMap(included);
 
   const trips = new Map();
   for (const item of data) {
@@ -214,46 +306,56 @@ export async function loadSchedulesGreenPairs(state, cfg, serviceDate, arlKids, 
     const stopId = item.relationships?.stop?.data?.id;
     if (!tripId || !stopId) continue;
 
+    const eff = stopParent.get(stopId) || stopId;
+
     const t = bestTimeFromAttrs(item.attributes || {});
     if (!t) continue;
 
-    const seq = item.attributes?.stop_sequence;
+    const rawSeq = item.attributes?.stop_sequence;
+    const seq = rawSeq == null ? null : Number(rawSeq);
+    const seqOk = Number.isFinite(seq) ? seq : null;
+
     const rec = trips.get(tripId) || {};
-    if (arlKids.has(stopId)) { rec.arl_t = t; rec.arl_seq = seq; }
-    if (parkKids.has(stopId)) { rec.park_t = t; rec.park_seq = seq; }
+    if (arlKids.has(eff))  { rec.arl_t = t; rec.arl_seq = seqOk; }
+    if (parkKids.has(eff)) { rec.park_t = t; rec.park_seq = seqOk; }
     trips.set(tripId, rec);
   }
 
   const out = [];
   for (const [tripId, rec] of trips.entries()) {
-    if (
-      rec.arl_t && rec.park_t &&
-      Number.isInteger(rec.arl_seq) && Number.isInteger(rec.park_seq) &&
-      rec.arl_seq < rec.park_seq &&
-      rec.arl_t < rec.park_t // extra safety
-    ) {
-      out.push({ tripId, fromT: rec.arl_t, toT: rec.park_t });
-    }
+    if (!rec.arl_t || !rec.park_t) continue;
+    if (!(rec.arl_t < rec.park_t)) continue;
+    if (rec.arl_seq != null && rec.park_seq != null && !(rec.arl_seq < rec.park_seq)) continue;
+    out.push({ tripId, fromT: rec.arl_t, toT: rec.park_t });
   }
 
-  // typically we binary-search by park arrival
   out.sort((a, b) => a.toT - b.toT);
   return out;
 }
 
+
 // Map<tripId, { depHarv, arrDisp }>
-export async function loadSchedulesBusHarv(state, cfg, serviceDate) {
-  const data = await fetchAll(state, "/schedules", {
+export async function loadSchedulesBusHarv(state, cfg, serviceDate, harvKids, minTime, maxTime) {
+  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
     "filter[route]": cfg.busRoute,
-    "filter[stop]": cfg.harvard,
+    "filter[stop]": csvFromAnySet(harvKids),
     "filter[date]": serviceDate,
+    "filter[min_time]": minTime,
+    "filter[max_time]": maxTime,
     "page[limit]": "350",
+    "include": "stop",
   });
+
+  const stopParent = buildStopParentMap(included);
 
   const out = new Map();
   for (const item of data) {
     const tripId = item.relationships?.trip?.data?.id;
-    if (!tripId) continue;
+    const stopId = item.relationships?.stop?.data?.id;
+    if (!tripId || !stopId) continue;
+
+    const eff = stopParent.get(stopId) || stopId;
+    if (!harvKids.has(eff)) continue;
 
     const a = item.attributes || {};
     const arr = parseIso(a.arrival_time);
@@ -269,27 +371,41 @@ export async function loadSchedulesBusHarv(state, cfg, serviceDate) {
   return out;
 }
 
+
 // Map<tripId, Date>
-export async function loadSchedulesBusHome(state, cfg, serviceDate, homeStopId) {
-  const data = await fetchAll(state, "/schedules", {
+export async function loadSchedulesBusHome(state, cfg, serviceDate, homeKids, minTime, maxTime) {
+  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
     "filter[route]": cfg.busRoute,
-    "filter[stop]": homeStopId,
+    "filter[stop]": csvFromAnySet(homeKids),
     "filter[date]": serviceDate,
+    "filter[min_time]": minTime,
+    "filter[max_time]": maxTime,
     "page[limit]": "800",
+    "include": "stop",
   });
+
+  const stopParent = buildStopParentMap(included);
 
   const out = new Map();
   for (const item of data) {
     const tripId = item.relationships?.trip?.data?.id;
-    if (!tripId) continue;
+    const stopId = item.relationships?.stop?.data?.id;
+    if (!tripId || !stopId) continue;
+
+    const eff = stopParent.get(stopId) || stopId;
+    if (!homeKids.has(eff)) continue;
+
     const a = item.attributes || {};
     const t = parseIso(a.arrival_time) || parseIso(a.departure_time);
     if (!t) continue;
+
     const prev = out.get(tripId);
     if (!prev || t < prev) out.set(tripId, t);
   }
+
   return out;
 }
+
 
 /* ---------------- Merge logic ---------------- */
 

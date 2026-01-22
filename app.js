@@ -239,6 +239,23 @@ function renderPlan(plan) {
     const expandedTripId = (state.selected75TripId || "").trim();
     renderTableBody(el.tbody, plan.groups, plan.includeHome, expandedTripId);
 
+    const startInput = controls?.startOverride; // assuming bindControls exposes it
+    const startErr = document.getElementById("startOverrideError"); // add this element in HTML
+
+    if (startInput) {
+        const raw = (state.startOverride || "").trim();
+        const invalid = !!raw && plan.overrideOk === false;
+
+        startInput.classList.toggle("invalid", invalid);
+
+        if (startErr) {
+            startErr.hidden = !invalid;
+            startErr.textContent = invalid
+                ? "Invalid time format. Use YYYY-MM-DD HH:MM (dashes, not slashes). Ignoring override."
+                : "";
+        }
+    }
+
     wireAccordion(
         el.tbody,
         el.tableWrap,
