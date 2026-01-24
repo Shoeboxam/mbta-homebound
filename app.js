@@ -395,61 +395,72 @@ async function rescheduleNotificationIfNeeded() {
 
 /* ---------------- main refresh ---------------- */
 
+let refreshQueued = false;
+
 async function refresh() {
-    isRefreshing = true;
+  if (isRefreshing) {
+    refreshQueued = true;
+    return;
+  }
+
+  isRefreshing = true;
+  setUpdatedLine(el.updatedWrap, el.updatedAgo, el.simTime, {
+    lastSuccessMs,
+    isRefreshing,
+    startOverride: state.startOverride,
+  });
+
+  clearError();
+  if (!hasRenderedOnce) showMode("loading");
+
+  try {
+    const plan = await buildGroupsForWindow(state, CFG);
+
+    const sel = (state.selected75TripId || "").trim();
+    if (sel && !plan.groups.some(g => g.tripId === sel)) {
+      state = saveState({ ...loadState(), selected75TripId: "" });
+    }
+
+    showMode("table");
+    renderPlan(plan);
+
+    hasRenderedOnce = true;
+    lastSuccessMs = Date.now();
+    startUpdatedTicker();
+
     setUpdatedLine(el.updatedWrap, el.updatedAgo, el.simTime, {
-        lastSuccessMs,
-        isRefreshing,
-        startOverride: state.startOverride,
+      lastSuccessMs,
+      isRefreshing: false,
+      startOverride: state.startOverride,
     });
 
-    clearError();
-    if (!hasRenderedOnce) showMode("loading");
+    await rescheduleNotificationIfNeeded();
+  } catch (err) {
+    const msg =
+      String(err?.message || "").includes("429")
+        ? "Rate limited by MBTA (429). Retrying automatically…"
+        : String(err?.message || "").includes("Failed to fetch")
+          ? "Network error reaching MBTA. Retrying automatically…"
+          : "Could not load MBTA data. Retrying automatically…";
 
-    try {
-        const plan = await buildGroupsForWindow(state, CFG);
+    showError(msg, err);
+    syncNotifyUiAvailability();
+    setNextNotifyLine("");
+  } finally {
+    isRefreshing = false;
 
-        const sel = (state.selected75TripId || "").trim();
-        if (sel && !plan.groups.some(g => g.tripId === sel)) {
-            state = saveState({ ...loadState(), selected75TripId: "" });
-        }
+    setUpdatedLine(el.updatedWrap, el.updatedAgo, el.simTime, {
+      lastSuccessMs,
+      isRefreshing,
+      startOverride: state.startOverride,
+    });
 
-
-        showMode("table");
-        renderPlan(plan);
-
-        hasRenderedOnce = true;
-        lastSuccessMs = Date.now();
-        startUpdatedTicker();
-
-        setUpdatedLine(el.updatedWrap, el.updatedAgo, el.simTime, {
-            lastSuccessMs,
-            isRefreshing: false,
-            startOverride: state.startOverride,
-        });
-
-        await rescheduleNotificationIfNeeded();
-    } catch (err) {
-        const msg =
-            String(err?.message || "").includes("429")
-                ? "Rate limited by MBTA (429). Retrying automatically…"
-                : String(err?.message || "").includes("Failed to fetch")
-                    ? "Network error reaching MBTA. Retrying automatically…"
-                    : "Could not load MBTA data. Retrying automatically…";
-
-        showError(msg, err);
-
-        // If error, error box replaces spinner; keep stale updated line if we had one.
-        syncNotifyUiAvailability();
-        setNextNotifyLine("");
-    } finally {
-        isRefreshing = false;
-        setUpdatedLine(el.updatedWrap, el.updatedAgo, el.simTime, {
-            lastSuccessMs,
-            isRefreshing,
-            startOverride: state.startOverride,
-        });
+    if (refreshQueued) {
+      refreshQueued = false;
+      // run once more using the newest state/visibility
+      refresh();
     }
+  }
 }
 
 /* ---------------- state routing ---------------- */
@@ -532,4 +543,7 @@ function init() {
     scheduleNextRefresh();
 }
 
-init();
+window.addEventListener("load", () => {
+  init();
+  scheduleNextRefresh();
+});

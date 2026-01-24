@@ -11,6 +11,13 @@
         href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%23da291c'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='18'%20fill='white'/%3E%3Ctext%20x='32'%20y='38'%20text-anchor='middle'%20font-family='Helvetica,Arial,sans-serif'%20font-size='18'%20font-weight='700'%20fill='%23000'%3ET%3C/text%3E%3C/svg%3E" />
 
     <link rel="stylesheet" href="style.css" />
+
+    <link rel="manifest" href="manifest.webmanifest">
+    <meta name="theme-color" content="#ffffff">
+
+    <link rel="preconnect" href="https://api-v3.mbta.com" crossorigin>
+    <link rel="dns-prefetch" href="//api-v3.mbta.com">
+
 </head>
 
 <body>
@@ -174,6 +181,13 @@
     </main>
 
     <script type="module" src="app.js"></script>
+
+    <script>
+        if ("serviceWorker" in navigator) {
+            navigator.serviceWorker.register("./sw.js?v=v6").catch(console.error);
+        }
+    </script>
+
 </body>
 
 </html>

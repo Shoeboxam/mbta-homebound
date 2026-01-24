@@ -20,27 +20,27 @@ import {
 // planner.js
 
 function parseStartOverride(s) {
-  if (!s) return null;
-  const t = String(s).trim();
-  if (!t) return null;
+    if (!s) return null;
+    const t = String(s).trim();
+    if (!t) return null;
 
-  // strict: must be YYYY-MM-DDTHH:MM (or space)
-  const norm = t.replace(" ", "T");
-  const m = norm.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
-  if (!m) return null;
+    // strict: must be YYYY-MM-DDTHH:MM (or space)
+    const norm = t.replace(" ", "T");
+    const m = norm.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+    if (!m) return null;
 
-  const [, yy, mm, dd, hh, mi] = m;
-  const d = new Date(Number(yy), Number(mm) - 1, Number(dd), Number(hh), Number(mi), 0, 0);
-  return isNaN(d) ? null : d;
+    const [, yy, mm, dd, hh, mi] = m;
+    const d = new Date(Number(yy), Number(mm) - 1, Number(dd), Number(hh), Number(mi), 0, 0);
+    return isNaN(d) ? null : d;
 }
 
 export function getNowInfo(state) {
-  const raw = (state.startOverride || "").trim();
-  const parsed = parseStartOverride(raw);
-  if (raw && !parsed) {
-    return { now: floorToMinute(new Date()), overrideOk: false };
-  }
-  return { now: floorToMinute(parsed || new Date()), overrideOk: true };
+    const raw = (state.startOverride || "").trim();
+    const parsed = parseStartOverride(raw);
+    if (raw && !parsed) {
+        return { now: floorToMinute(new Date()), overrideOk: false };
+    }
+    return { now: floorToMinute(parsed || new Date()), overrideOk: true };
 }
 
 
@@ -304,13 +304,16 @@ function upsertBusHome(map, tid, t, start, end) {
     }
 }
 
+function settledValue(settled, fallback) {
+  return settled && settled.status === "fulfilled" ? settled.value : fallback;
+}
+
 
 export async function buildGroupsForWindow(state, cfg) {
     const includeHome = Boolean((state.homeStop || "").trim());
     const { now: start, overrideOk } = getNowInfo(state);
     const end = new Date(start.getTime() + cfg.hours * 3600 * 1000);
     const scheduleSlices = scheduleSlicesForWindow(start, end, 30);
-
 
     const [parkKids, harvKids, arlKids] = await Promise.all([
         childStops(state, cfg.park),
@@ -322,7 +325,38 @@ export async function buildGroupsForWindow(state, cfg) {
         ? await childStops(state, state.homeStop).catch(() => new Set([state.homeStop]))
         : new Set();
 
-    const alertInfo = await loadRelevantAlertsWithCounts(state, cfg, parkKids, harvKids, arlKids);
+    const wantsPred = canUsePredictions(state);
+
+    // ---- START THE FOUR "REFRESH" REQUESTS IN PARALLEL ----
+
+    // 1) Alerts
+    const alertP = loadRelevantAlertsWithCounts(state, cfg, parkKids, harvKids, arlKids);
+
+    // 2) Bus predictions
+    let busPredP = Promise.resolve(null);
+    if (wantsPred) {
+        const stopSet = new Set([...harvKids]);
+        if (includeHome) for (const s of homeKids) stopSet.add(s);
+
+        busPredP = loadPredictions(state, cfg.busRoute, csvFromSet(stopSet));
+    }
+
+    // 3) Green predictions
+    let greenPredP = Promise.resolve(null);
+    if (wantsPred) {
+        const stopSet = new Set([...arlKids, ...parkKids]);
+        greenPredP = loadPredictions(state, cfg.greenRoutes.join(","), csvFromSet(stopSet));
+    }
+
+    // 4) Red predictions
+    let redPredP = Promise.resolve(null);
+    if (wantsPred) {
+        const stopSet = new Set([...parkKids, ...harvKids]);
+        redPredP = loadPredictions(state, cfg.redRoute, csvFromSet(stopSet));
+    }
+
+    // Optional: you can “bundle” these so failures don't throw until you inspect them
+    const refreshP = Promise.allSettled([alertP, busPredP, greenPredP, redPredP]);
 
     /* ---------------- BUS schedules always ---------------- */
     const schedBusByTrip = new Map();
@@ -346,29 +380,30 @@ export async function buildGroupsForWindow(state, cfg) {
     const predBusByTrip = new Map();
     const predHomeByTrip = new Map();
 
-    if (canUsePredictions(state)) {
-        const stopSet = new Set([...harvKids]);
-        if (includeHome) for (const s of homeKids) stopSet.add(s);
+    if (wantsPred) {
+        const [alertRes, busRes /* greenRes */, /* redRes */] = await refreshP;
 
-        const { data: predData, stopParent } = await loadPredictions(state, cfg.busRoute, csvFromSet(stopSet));
-        const tripMap = buildTripStopTimesFromPred(
-            predData,
-            { harv: harvKids, home: includeHome ? homeKids : null },
-            cfg.predWindowMin,
-            stopParent,
-            start,
-        );
+        const busPred = settledValue(busRes, null);
+        if (busPred) {
+            const { data: predData, stopParent } = busPred;
 
-        const busPred = busTripsFromPred(tripMap, includeHome);
-        for (const [tid, v] of busPred.entries()) {
-            predBusByTrip.set(tid, { depHarv: v.depHarv, arrDisp: v.arrDisp });
-            if (includeHome && v.home) predHomeByTrip.set(tid, v.home);
+            const tripMap = buildTripStopTimesFromPred(
+                predData,
+                { harv: harvKids, home: includeHome ? homeKids : null },
+                cfg.predWindowMin,
+                stopParent,
+                start,
+            );
+
+            const busTrips = busTripsFromPred(tripMap, includeHome);
+            for (const [tid, v] of busTrips.entries()) {
+                predBusByTrip.set(tid, { depHarv: v.depHarv, arrDisp: v.arrDisp });
+                if (includeHome && v.home) predHomeByTrip.set(tid, v.home);
+            }
         }
     }
 
     let busSorted = mergeBusByTripId(schedBusByTrip, schedHomeByTrip, predBusByTrip, predHomeByTrip);
-
-    // Only consider trips headed toward home if home is set
     if (includeHome) busSorted = busSorted.filter((b) => b.home && b.home > b.dep);
 
     const busLookup = new Map();
@@ -382,30 +417,31 @@ export async function buildGroupsForWindow(state, cfg) {
 
     /* ---------------- GREEN predictions optional (partial overlay) ---------------- */
     let greenPairs = [];
-    if (canUsePredictions(state)) {
-        const stopSet = new Set([...arlKids, ...parkKids]);
-        const { data: predData, stopParent } = await loadPredictions(
-            state,
-            cfg.greenRoutes.join(","),
-            csvFromSet(stopSet)
-        );
-        const tripMap = buildTripStopTimesFromPred(
-            predData,
-            { arl: arlKids, park: parkKids },
-            cfg.predWindowMin,
-            stopParent,
-            start,
-        );
+    if (wantsPred) {
+        const [, , greenRes] = await refreshP;
+        const greenPred = settledValue(greenRes, null);
 
-        const predArl = predStopTimesFromTripMap(tripMap, "arl");
-        const predPark = predStopTimesFromTripMap(tripMap, "park");
+        if (greenPred) {
+            const { data: predData, stopParent } = greenPred;
 
-        greenPairs = mergePairsPartial(schedGreenPairs, predArl, predPark, start, end);
+            const tripMap = buildTripStopTimesFromPred(
+                predData,
+                { arl: arlKids, park: parkKids },
+                cfg.predWindowMin,
+                stopParent,
+                start,
+            );
+
+            const predArl = predStopTimesFromTripMap(tripMap, "arl");
+            const predPark = predStopTimesFromTripMap(tripMap, "park");
+            greenPairs = mergePairsPartial(schedGreenPairs, predArl, predPark, start, end);
+        } else {
+            greenPairs = mergePairsPartial(schedGreenPairs, null, null, start, end);
+        }
     } else {
         greenPairs = mergePairsPartial(schedGreenPairs, null, null, start, end);
     }
 
-    // Binary-search by Park arrival
     greenPairs.sort((a, b) => a.toT - b.toT);
 
     /* ---------------- RED schedules always ---------------- */
@@ -416,30 +452,31 @@ export async function buildGroupsForWindow(state, cfg) {
 
     /* ---------------- RED predictions optional (partial overlay) ---------------- */
     let redPairs = [];
-    if (canUsePredictions(state)) {
-        const stopSet = new Set([...parkKids, ...harvKids]);
-        const { data: predData, stopParent } = await loadPredictions(
-            state,
-            cfg.redRoute,
-            csvFromSet(stopSet)
-        );
-        const tripMap = buildTripStopTimesFromPred(
-            predData,
-            { park: parkKids, harv: harvKids },
-            cfg.predWindowMin,
-            stopParent,
-            start,
-        );
+    if (wantsPred) {
+        const [, , , redRes] = await refreshP;
+        const redPred = settledValue(redRes, null);
 
-        const predPark = predStopTimesFromTripMap(tripMap, "park");
-        const predHarv = predStopTimesFromTripMap(tripMap, "harv");
+        if (redPred) {
+            const { data: predData, stopParent } = redPred;
 
-        redPairs = mergePairsPartial(schedRedPairs, predPark, predHarv, start, end);
+            const tripMap = buildTripStopTimesFromPred(
+                predData,
+                { park: parkKids, harv: harvKids },
+                cfg.predWindowMin,
+                stopParent,
+                start,
+            );
+
+            const predPark = predStopTimesFromTripMap(tripMap, "park");
+            const predHarv = predStopTimesFromTripMap(tripMap, "harv");
+            redPairs = mergePairsPartial(schedRedPairs, predPark, predHarv, start, end);
+        } else {
+            redPairs = mergePairsPartial(schedRedPairs, null, null, start, end);
+        }
     } else {
         redPairs = mergePairsPartial(schedRedPairs, null, null, start, end);
     }
 
-    // Filter to window by Park arrival
     redPairs = redPairs.filter((p) => p.fromT >= start && p.fromT <= end).sort((a, b) => a.fromT - b.fromT);
 
     const bufferMs = Math.max(0, Number(state.layoverMin || 0)) * 60_000;
@@ -665,6 +702,10 @@ export async function buildGroupsForWindow(state, cfg) {
 
         out.push({ key: g.key, tripId: g.meta.tripId, meta: g.meta, best: g.best, rowsCollapsed, rowsExpanded });
     }
+
+    // ---- Use alerts result (from the same refresh bundle) right before returning ----
+    const [alertRes] = await refreshP;
+    const alertInfo = settledValue(alertRes, { headers: [], counts: { red: 0, green: 0, bus: 0 } });
 
     return {
         start,

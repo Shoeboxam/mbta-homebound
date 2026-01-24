@@ -19,9 +19,130 @@ export function csvFromSet(set) {
 }
 
 function csvFromAnySet(set) {
-  return [...new Set([...set])].join(",");
+  return [...new Set([...set])].sort().join(",");
 }
 
+// ---- Persistent cache (localStorage) ----
+const LS_PREFIX = "mbta-cache:v1:";
+const LS_MAX_BYTES = 750_000; // best-effort guard; adjust if you want
+
+function lsKey(key) {
+  return LS_PREFIX + key;
+}
+
+function lsGet(key) {
+  try {
+    const raw = localStorage.getItem(lsKey(key));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object") return null;
+    if (obj.expiresAt && obj.expiresAt <= Date.now()) {
+      localStorage.removeItem(lsKey(key));
+      return null;
+    }
+    return obj.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function lsGetEntry(key) {
+  try {
+    const raw = localStorage.getItem(lsKey(key));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object") return null;
+    if (obj.expiresAt && obj.expiresAt <= Date.now()) {
+      localStorage.removeItem(lsKey(key));
+      return null;
+    }
+    return obj; // includes { expiresAt, savedAt, value, ...custom fields }
+  } catch {
+    return null;
+  }
+}
+
+function lsSet(key, value, ttlMs) {
+  try {
+    const obj = {
+      expiresAt: Date.now() + ttlMs,
+      savedAt: Date.now(),
+      value,
+    };
+    const raw = JSON.stringify(obj);
+
+    // crude guard against runaway growth
+    if (raw.length > LS_MAX_BYTES) return;
+
+    localStorage.setItem(lsKey(key), raw);
+  } catch {
+    // quota exceeded / blocked - just skip caching
+  }
+}
+
+// Optional: wipe all cached MBTA stuff
+export function clearPersistentMbtaCache() {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(LS_PREFIX)) localStorage.removeItem(k);
+    }
+  } catch {}
+}
+
+function stableParamsKey(params) {
+  const p = params ? Object.entries(params).sort(([a],[b]) => a.localeCompare(b)) : [];
+  return JSON.stringify(p);
+}
+
+function persistentKey(url, params, { includeApiKey = false, apiKey = "" } = {}) {
+  // IMPORTANT: for stops data, apiKey does not affect content, so exclude by default.
+  return `${url}|${stableParamsKey(params)}|k:${includeApiKey ? apiKey : ""}`;
+}
+
+function normalizeStartOverride(startOverride) {
+  // Fingerprint must be stable across reloads.
+  // Accept Date, ISO string, number, etc.
+  if (!startOverride) return "";
+  if (startOverride instanceof Date) return startOverride.toISOString();
+
+  // If it's a string that parses as a date, normalize to ISO (stable).
+  if (typeof startOverride === "string") {
+    const d = new Date(startOverride);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+    return startOverride; // keep raw string if not a date
+  }
+
+  // numbers / booleans / objects -> stringify best-effort
+  try {
+    return typeof startOverride === "object"
+      ? JSON.stringify(startOverride)
+      : String(startOverride);
+  } catch {
+    return String(startOverride);
+  }
+}
+
+// Fetch + persistent cache with TTL
+export async function fetchJsonCachedPersistent(
+  state,
+  url,
+  params = null,
+  ttlMs = 0,
+  { includeApiKeyInCacheKey = false } = {}
+) {
+  const key = persistentKey(url, params, { includeApiKey: includeApiKeyInCacheKey, apiKey: state?.apiKey || "" });
+
+  if (ttlMs > 0) {
+    const hit = lsGet(key);
+    if (hit) return hit;
+  }
+
+  const value = await fetchJson(state, url, params);
+
+  if (ttlMs > 0) lsSet(key, value, ttlMs);
+  return value;
+}
 
 export async function fetchJson(state, url, params = null) {
   const u = new URL(url);
@@ -92,41 +213,134 @@ export async function fetchAll(state, path, params) {
   }
   return out;
 }
+const MIN = 60 * 1000;
+const SCHEDULE_TTL = 60 * MIN;          // stored up to 1 hour
+const SCHEDULE_WINDOW_MIN = 60;         // window size + reset threshold
+const SCHEDULES_ONEKEY = "schedules:onekey"; // one localStorage entry total
 
-// mbta.js
-const allCache = new Map(); // key -> { expires, data }
-
-function stableKey(path, params, apiKey) {
-  // apiKey matters because it can change rate limits / access patterns.
-  // if you prefer, omit apiKey from the key and just clear cache on key changes.
-  const p = params ? Object.entries(params).sort(([a],[b]) => a.localeCompare(b)) : [];
-  return JSON.stringify({ path, p, apiKey: apiKey || "" });
+function minutesFromHHMM(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || "");
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 47 || mm < 0 || mm > 59) return null; // allow service-day > 24h
+  return hh * 60 + mm;
 }
 
-const SCHEDULE_CACHE = 6 * 60 * 60 * 1000;
-
-export async function fetchAllCached(state, path, params, ttlMs) {
-  const key = stableKey(path, params, state?.apiKey);
-  const now = Date.now();
-  const hit = allCache.get(key);
-  if (hit && hit.expires > now) return hit.data;
-
-  const data = await fetchAll(state, path, params);
-  allCache.set(key, { expires: now + ttlMs, data });
-  return data;
+function hhmmFromMinutes(totalMinutes) {
+  if (!Number.isFinite(totalMinutes)) return null;
+  // allow > 24h (service day), but keep it sane
+  const t = Math.max(0, Math.min(47 * 60 + 59, Math.floor(totalMinutes)));
+  const hh = Math.floor(t / 60);
+  const mm = t % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
-// optional helper if apiKey changes
-export function clearFetchAllCache() {
-  allCache.clear();
+function readSchedulesOneKey() {
+  return lsGetEntry(SCHEDULES_ONEKEY) || null; // uses your lsGetEntry()
 }
+
+function writeSchedulesOneKey(obj) {
+  try {
+    const raw = JSON.stringify(obj);
+    if (raw.length > LS_MAX_BYTES) return;
+    localStorage.setItem(lsKey(SCHEDULES_ONEKEY), raw);
+  } catch {}
+}
+
+/**
+ * One LS entry with per-group slots, but ONLY min_time controls reuse.
+ * On MISS, fetches a fixed window: [min_time, min_time + 60min]
+ * On HIT, returns cached value even if caller's max_time moved forward.
+ */
+async function fetchSchedulesOneKeyCached(state, groupName, params) {
+  const reqDate = params?.["filter[date]"] || "";
+  const reqMinStr = params?.["filter[min_time]"] || "";
+  const reqMin = minutesFromHHMM(reqMinStr);
+
+  const reqOverrideKey = normalizeStartOverride(state.startOverride);
+
+  // If we can't parse min_time, don't cache (just fetch exact params)
+  if (reqMin == null) {
+    return await fetchAllWithIncluded(state, "/schedules", params);
+  }
+
+  const cache = readSchedulesOneKey(); // lsGetEntry(SCHEDULES_ONEKEY)
+  const cacheOverrideKey = cache?.overrideKey || "";
+
+  // If startOverride fingerprint changed, treat as a hard reset.
+  // (Still only ONE LS entry — we just overwrite it.)
+  const overrideMismatch = cache && cacheOverrideKey !== reqOverrideKey;
+
+  const slot = !overrideMismatch ? cache?.groups?.[groupName] : null;
+
+  if (slot?.value && slot.date === reqDate && typeof slot.minTime === "string") {
+    const cachedMin = minutesFromHHMM(slot.minTime);
+    if (cachedMin != null) {
+      const delta = reqMin - cachedMin;
+
+      // Your rule:
+      // - reset if reqMin < cachedMin
+      // - reset if reqMin > cachedMin + 60
+      if (delta >= 0 && delta <= SCHEDULE_WINDOW_MIN) {
+        return slot.value; // HIT
+      }
+    }
+  }
+
+  // MISS: fetch a fixed 60-minute window starting at reqMin
+  const fetchMinStr = reqMinStr;
+  const fetchMaxStr = params["filter[max_time]"] || hhmmFromMinutes(reqMin + SCHEDULE_WINDOW_MIN);
+
+  const fetchParams = {
+    ...params,
+    "filter[min_time]": fetchMinStr,
+    "filter[max_time]": fetchMaxStr,
+  };
+
+  const value = await fetchAllWithIncluded(state, "/schedules", fetchParams);
+
+  // Write back into the ONE localStorage entry.
+  // If override changed, drop all groups (hard reset).
+  const next =
+    cache?.groups && !overrideMismatch
+      ? cache
+      : { expiresAt: 0, savedAt: 0, overrideKey: reqOverrideKey, groups: {} };
+
+  next.expiresAt = Date.now() + SCHEDULE_TTL;
+  next.savedAt = Date.now();
+  next.overrideKey = reqOverrideKey;
+
+  next.groups[groupName] = {
+    date: reqDate,
+    minTime: fetchMinStr, // fingerprint (plus overrideKey at top level)
+    maxTime: fetchMaxStr, // informational/debug only
+    value,
+  };
+
+  writeSchedulesOneKey(next);
+  return value;
+}
+
+
+
+const STOP_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export async function childStops(state, parentStopId) {
+  // fast path: in-memory for this session
   if (childStopCache.has(parentStopId)) return childStopCache.get(parentStopId);
 
-  const payload = await fetchJson(state, `${BASE}/stops/${parentStopId}`, {
-    include: "child_stops",
-  });
+  const payload = await fetchJsonCachedPersistent(
+    state,
+    `${BASE}/stops/${parentStopId}`,
+    {
+      include: "child_stops",
+      "fields[stop]": "parent_station", // keep payload small
+    },
+    STOP_TTL,
+    { includeApiKeyInCacheKey: false }
+  );
 
   const set = new Set();
   if (payload.data?.id) set.add(payload.data.id);
@@ -141,14 +355,23 @@ export async function childStops(state, parentStopId) {
 /* ---------------- Predictions helpers ---------------- */
 
 export async function loadPredictions(state, routeCsv, stopCsv) {
-    const { data, included } = await fetchAllWithIncluded(state, "/predictions", {
+  const { data, included } = await fetchAllWithIncluded(state, "/predictions", {
     "filter[route]": routeCsv,
     "filter[stop]": stopCsv,
+
     "page[limit]": "250",
+
+    // keep include stop, but only ask for parent_station
     "include": "stop",
+    "fields[stop]": "parent_station",
+
+    // only the prediction fields you read in buildTripStopTimesFromPred
+    "fields[prediction]": "arrival_time,departure_time,stop_sequence,direction_id",
   });
+
   return { data, stopParent: buildStopParentMap(included) };
 }
+
 
 // Build Map<tripId, { dir, stops: {name:{t, seq, arr, dep}} }>
 export function buildTripStopTimesFromPred(predData, stopSetsByName, predWindowMin = 120, stopParent = null, nowOverride = null) {
@@ -238,7 +461,7 @@ export function busTripsFromPred(tripMap, includeHome) {
 export async function loadSchedulesRedPairs(state, cfg, serviceDate, parkKids, harvKids, minTime, maxTime) {
   const stopCsv = csvFromAnySet(new Set([...parkKids, ...harvKids]));
 
-  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
+  const params = {
     "filter[route]": cfg.redRoute,
     "filter[stop]": stopCsv,
     "filter[date]": serviceDate,
@@ -246,7 +469,11 @@ export async function loadSchedulesRedPairs(state, cfg, serviceDate, parkKids, h
     "filter[max_time]": maxTime,
     "page[limit]": "450",
     "include": "stop",
-  });
+    "fields[stop]": "parent_station",
+    "fields[schedule]": "arrival_time,departure_time,stop_sequence",
+  };
+
+  const { data, included } = await fetchSchedulesOneKeyCached(state, "redPairs", params);
 
   const stopParent = buildStopParentMap(included);
 
@@ -288,7 +515,7 @@ export async function loadSchedulesRedPairs(state, cfg, serviceDate, parkKids, h
 export async function loadSchedulesGreenPairs(state, cfg, serviceDate, arlKids, parkKids, minTime, maxTime) {
   const stopCsv = csvFromAnySet(new Set([...arlKids, ...parkKids]));
 
-  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
+  const params = {
     "filter[route]": cfg.greenRoutes.join(","),
     "filter[stop]": stopCsv,
     "filter[date]": serviceDate,
@@ -296,7 +523,11 @@ export async function loadSchedulesGreenPairs(state, cfg, serviceDate, arlKids, 
     "filter[max_time]": maxTime,
     "page[limit]": "650",
     "include": "stop",
-  });
+    "fields[stop]": "parent_station",
+    "fields[schedule]": "arrival_time,departure_time,stop_sequence",
+  };
+
+  const { data, included } = await fetchSchedulesOneKeyCached(state, "greenPairs", params);
 
   const stopParent = buildStopParentMap(included);
 
@@ -336,7 +567,7 @@ export async function loadSchedulesGreenPairs(state, cfg, serviceDate, arlKids, 
 
 // Map<tripId, { depHarv, arrDisp }>
 export async function loadSchedulesBusHarv(state, cfg, serviceDate, harvKids, minTime, maxTime) {
-  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
+  const params = {
     "filter[route]": cfg.busRoute,
     "filter[stop]": csvFromAnySet(harvKids),
     "filter[date]": serviceDate,
@@ -344,7 +575,11 @@ export async function loadSchedulesBusHarv(state, cfg, serviceDate, harvKids, mi
     "filter[max_time]": maxTime,
     "page[limit]": "350",
     "include": "stop",
-  });
+    "fields[stop]": "parent_station",
+    "fields[schedule]": "arrival_time,departure_time,stop_sequence",
+  };
+
+  const { data, included } = await fetchSchedulesOneKeyCached(state, "busHarvard", params);
 
   const stopParent = buildStopParentMap(included);
 
@@ -374,7 +609,7 @@ export async function loadSchedulesBusHarv(state, cfg, serviceDate, harvKids, mi
 
 // Map<tripId, Date>
 export async function loadSchedulesBusHome(state, cfg, serviceDate, homeKids, minTime, maxTime) {
-  const { data, included } = await fetchAllWithIncluded(state, "/schedules", {
+  const params = {
     "filter[route]": cfg.busRoute,
     "filter[stop]": csvFromAnySet(homeKids),
     "filter[date]": serviceDate,
@@ -382,7 +617,11 @@ export async function loadSchedulesBusHome(state, cfg, serviceDate, homeKids, mi
     "filter[max_time]": maxTime,
     "page[limit]": "800",
     "include": "stop",
-  });
+    "fields[stop]": "parent_station",
+    "fields[schedule]": "arrival_time,departure_time,stop_sequence",
+  };
+
+  const { data, included } = await fetchSchedulesOneKeyCached(state, "busHome", params);
 
   const stopParent = buildStopParentMap(included);
 
